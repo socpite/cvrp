@@ -1,0 +1,133 @@
+\section{Modeling \& Algorithm}
+\label{sec:methodology}
+
+In this section, we describe the proposed capacity-aware planning model and algorithm for solving the capacitated picking routing problem. The main idea is to model fruit-picking and basket-delivery decisions as a shortest-path search over a discrete state space. Each state explicitly records the current robot location, the set of unpicked fruits, and the set of fruits currently carried by the robot. This allows the planner to enforce the carrying capacity constraint while jointly optimizing the picking order and the basket visitation sequence.
+
+\subsection{Graph Abstraction}
+\label{subsec:graph_abstraction}
+
+We first convert the picking environment into a complete weighted graph. Let
+\[
+    \mathcal{I} = \{1,2,\dots,n\}, 
+    \qquad
+    \mathcal{J} = \{1,2,\dots,m\}
+\]
+denote the fruit and basket index sets, respectively. We denote the initial robot position by $\mathbf{s} \in \mathbb{R}^{3}$. The vertex set is defined as
+\[
+    \mathcal{V}
+    =
+    \{\mathbf{s}\}
+    \cup
+    \mathcal{F}
+    \cup
+    \mathcal{B}.
+\]
+
+For every pair of vertices $u,v\in\mathcal{V}$, we define the travel cost
+\[
+    c_{uv}=d(u,v),
+\]
+where $d(u,v)$ is the collision-free travel distance from $u$ to $v$. In obstacle-free environments, this cost is given by the Euclidean distance:
+\begin{equation}
+    c_{uv}
+    =
+    \|u-v\|_2.
+\end{equation}
+In environments with obstacles, $c_{uv}$ can be obtained from a motion planner or from the shortest path on a roadmap. After these pairwise costs are computed, the high-level routing problem can be solved over the discrete graph $\mathcal{G}=(\mathcal{V},\mathcal{E})$, where $\mathcal{E}$ contains all pairwise connections between vertices.
+
+\subsection{State-Space Formulation}
+\label{subsec:state_space_formulation}
+
+A planning state is defined as
+\[
+    x=(v,\mathcal{U},\mathcal{C}),
+\]
+where $v\in\mathcal{V}$ is the current robot location, $\mathcal{U}\subseteq\mathcal{I}$ is the set of fruits that have not yet been picked, and $\mathcal{C}\subseteq\mathcal{I}$ is the set of fruits currently carried by the robot. The delivered fruit set is therefore implicitly given by
+\[
+    \mathcal{D}
+    =
+    \mathcal{I}
+    \setminus
+    (\mathcal{U}\cup\mathcal{C}).
+\]
+
+The current onboard load is
+\begin{equation}
+    \ell(\mathcal{C})
+    =
+    \sum_{i\in\mathcal{C}} w_i.
+    \label{eq:onboard_load}
+\end{equation}
+A state is feasible if
+\[
+    \ell(\mathcal{C}) \leq K.
+\]
+
+The initial state is
+\[
+    x_0
+    =
+    (\mathbf{s},\mathcal{I},\emptyset),
+\]
+which means that the robot starts at $\mathbf{s}$, all fruits are initially unpicked, and the robot carries no fruit. The goal state set is
+\[
+    \mathcal{X}_{g}
+    =
+    \{(v,\emptyset,\emptyset)\mid v\in\mathcal{V}\},
+\]
+which means that all fruits have been picked and delivered.
+
+From a state $x=(v,\mathcal{U},\mathcal{C})$, the robot can perform two types of actions: pickup actions and delivery actions.
+
+\subsubsection{Pickup Action}
+
+For any unpicked fruit $i\in\mathcal{U}$, the robot may pick fruit $i$ if the resulting onboard load does not exceed the carrying capacity:
+\[
+    \ell(\mathcal{C}) + w_i \leq K.
+\]
+The successor state is then
+\[
+    x'
+    =
+    (\mathbf{f}_i,
+    \mathcal{U}\setminus\{i\},
+    \mathcal{C}\cup\{i\}),
+    \label{eq:pickup_successor}
+\]
+with transition cost
+\[
+    \Delta(x,x') = c_{v,\mathbf{f}_i}.
+\]
+
+\subsubsection{Delivery Action}
+
+For each basket $j\in\mathcal{J}$, let
+\[
+    \mathcal{C}_j
+    =
+    \{i\in\mathcal{C}\mid t_i=j\}
+\]
+be the set of currently carried fruits assigned to basket $j$. If $\mathcal{C}_j\neq\emptyset$, the robot may visit basket $\mathbf{b}_j$ and unload those fruits. The successor state is
+\[
+    x'
+    =
+    (\mathbf{b}_j,
+    \mathcal{U},
+    \mathcal{C}\setminus\mathcal{C}_j),
+    \label{eq:delivery_successor}
+\]
+with transition cost
+\[
+    \Delta(x,x') = c_{v,\mathbf{b}_j}.
+\]
+
+This delivery model unloads all carried fruits assigned to the visited basket. This is without loss of generality because unloading an eligible fruit at its assigned basket does not increase the traveled distance and can only reduce the future onboard load.
+
+\begin{prop}{Dominance of Full Unloading}
+\label{prop:full_unloading}
+At any visit to basket $\mathbf{b}_j$, there exists an optimal route that unloads all carried fruits assigned to basket $j$.
+\end{prop}
+
+\begin{proof}
+Consider any feasible route that visits basket $\mathbf{b}_j$ while carrying a nonempty set $\mathcal{C}_j$ of fruits assigned to basket $j$, but unloads only a strict subset of $\mathcal{C}_j$. If the robot instead unloads all fruits in $\mathcal{C}_j$ at the same basket visit, the sequence of visited locations remains unchanged. Hence, the travel cost does not increase. Moreover, the onboard load after the basket visit weakly decreases, so the modified route cannot violate the carrying capacity constraint if the original route was feasible. Therefore, there exists an optimal route that unloads all deliverable fruits whenever a corresponding basket is visited.
+\end{proof}
