@@ -131,11 +131,6 @@ def solve_ip(prob: Problem, time_limit: float = 120.0, verbose: bool = False,
     for i, j in edges:
         model.addConstr(gp.quicksum(x[b][i, j] for b in range(m)) <= prob.capacity * y[i, j], name=f"cap_{i}_{j}")
 
-    for f_idx in range(n):
-        f = f_start + f_idx
-        basket = b_start + prob.assignments[f_idx]
-        model.addConstr(y[basket, f] == 0, name=f"no_back_{f_idx}")
-
     w = model.addVars(edges, ub=N, name="w")
     model.addConstr(gp.quicksum(w[s_idx, j] for j in range(1, N)) == n, name="wsrc")
     for f in range(f_start, f_start + n):
