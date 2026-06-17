@@ -1,0 +1,4 @@
+# Direct dependencies (transitive deps are pulled in automatically)
+gurobipy>=13.0
+numpy>=2.0
+matplotlib>=3.10
