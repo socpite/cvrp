@@ -378,17 +378,21 @@ def app(initial_input: Optional[str] = None, initial_output: Optional[str] = Non
         anim["pos"] += 0.03
         n_seg = len(rp) - 1
         if anim["pos"] >= n_seg:
-            anim["pos"] = 0.0
-        seg = int(anim["pos"])
-        t = anim["pos"] - seg
-        a, b = rp[seg], rp[seg + 1]
-        px, py, pz = (a[k] + (b[k] - a[k]) * t for k in range(3))
+            anim["pos"] = float(n_seg)
+            px, py, pz = rp[-1]
+        else:
+            seg = int(anim["pos"])
+            t = anim["pos"] - seg
+            a, b = rp[seg], rp[seg + 1]
+            px, py, pz = (a[k] + (b[k] - a[k]) * t for k in range(3))
         if anim["artist"] is None:
             anim["artist"] = ax.plot([px], [py], [pz], "o", color=COLOR_DOT, markersize=14, zorder=10)[0]
         else:
             anim["artist"].set_data([px], [py])
             anim["artist"].set_3d_properties([pz])
         fig.canvas.draw_idle()
+        if anim["pos"] >= n_seg:
+            _stop_anim()
 
     def on_play(_):
         if not anim["route"] or len(anim["route"]) < 2:
@@ -396,6 +400,8 @@ def app(initial_input: Optional[str] = None, initial_output: Optional[str] = Non
         if anim["running"]:
             _stop_anim()
             return
+        if anim["pos"] >= len(anim["route"]) - 1:
+            anim["pos"] = 0.0
         anim["running"] = True
         anim["timer"] = fig.canvas.new_timer(interval=50)
         anim["timer"].add_callback(_anim_tick)

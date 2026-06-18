@@ -10,12 +10,18 @@ picking routing plan for a given :class:`~src.problem.Problem`:
   cost matches the recomputed travel distance.
 """
 
+import argparse
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
 
-from src.formats import parse_label
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.formats import load_problem, load_solution, parse_label
 from src.problem import Problem
 
 Point = Tuple[float, float, float]
@@ -135,3 +141,30 @@ def validate_route(
         reported_cost=reported_cost,
         max_load=max_load,
     )
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser(description="Validate a picking-routing route.")
+    parser.add_argument("--input", required=True, help="problem JSON file")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--route", nargs="+", help="route labels, e.g. s f0 f1 b0 s")
+    group.add_argument("--output", help="solution JSON file containing route/cost")
+    parser.add_argument("--reported-cost", type=float, help="optional cost to compare against --route")
+    args = parser.parse_args()
+
+    prob = load_problem(args.input)
+    if args.output:
+        sol = load_solution(args.output)
+        labels = sol.route
+        reported_cost = sol.cost
+    else:
+        labels = args.route
+        reported_cost = args.reported_cost
+
+    result = validate_route(prob, labels, reported_cost)
+    print(result.summary())
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
