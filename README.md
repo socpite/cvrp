@@ -82,7 +82,11 @@ src/
   problem.py      Problem / Solution dataclasses, distance + cost-matrix helpers
   solve.py        solve_ip(): builds and solves the Gurobi MIP, extracts the route
   generator.py    Hand-built small test instances + random instance generator
-  visualize.py    3D matplotlib rendering: show(), save(), and an interactive browse()
+  formats.py      JSON load/save for problems & solutions; route label conversion
+  validate.py     validate_route(): feasibility check of a route against a problem
+  visualize.py    3D rendering + interactive app() (Open Input / Solve / Open Output) + CLI
+instances/        Sample problem (input) JSON files
+solutions/        Solution (output) JSON files
 tests/
   test_small.py   Solve all 6 small instances, save a PNG per instance to output/
   test_large.py   Solve the 3 larger random instances (20-30 fruits)
@@ -131,27 +135,81 @@ uv run python tests/test_solve.py       # needs a Gurobi license
 
 ### Interactive 3D viewer
 
-Launches a matplotlib window to browse instances, solve them on demand, and animate the picker
-moving along the route:
+Launches a matplotlib window that works on files (see [File formats](#file-formats)):
 
 ```bash
 uv run python src/visualize.py
 ```
 
-Controls:
+Workflow: **Open Input** (load a problem JSON) → either **Solve** it, or **Open Output** (load a
+solution JSON). Loaded/solved routes are validated against the input and drawn — **green** if
+valid, **red** if not — with the failure reason shown in the status line and full details printed
+to the console.
 
-| Input                         | Action                                              |
-| ----------------------------- | --------------------------------------------------- |
-| Left / Right arrows           | Previous / next instance                            |
-| `s`                           | Solve the current instance                          |
-| `r`                           | Reset (clear the solution)                          |
-| Spacebar                      | Play / pause the route animation                    |
-| **Solve IP** button           | Solve the current instance                          |
-| **Random** button             | Generate and add a random instance                  |
-| **Play / Reset** buttons      | Control the animated picker dot                     |
+| Button          | Action                                                                 |
+| --------------- | ---------------------------------------------------------------------- |
+| **Open Input**  | Load a problem (input) JSON and draw it.                               |
+| **Solve**       | Solve the loaded problem with the IP solver, validate, and draw.       |
+| **Open Output** | Load a solution (output) JSON, validate it against the input, and draw.|
+| **Save Output** | Write the current solved route to a solution JSON.                     |
+| **Play / Reset**| Animate / reset the picker moving along the route.                     |
 
-> The viewer needs an interactive matplotlib backend (a display / GUI). On a headless machine use
-> `save()` / `test_small.py` to write PNGs instead.
+Sample input files are in `instances/` (the built-in test instances, exported to JSON).
+
+> The interactive window needs a GUI backend; file dialogs use Tk. On a headless machine, use the
+> CLI below (it writes a PNG and validates without opening a window).
+
+### Command-line: solve / validate / render
+
+The same module runs non-interactively when given `--input`:
+
+```bash
+# Solve an instance, save the solution JSON, and render a PNG (no window):
+uv run python src/visualize.py --input instances/test3_capacity_forced_multi_trip.json \
+    --write-output solutions/test3.json --save output/test3.png --no-show
+
+# Validate an existing solution against its problem (exit code 0 = valid, 1 = invalid):
+uv run python src/visualize.py --input instances/test3_capacity_forced_multi_trip.json \
+    --output solutions/test3.json --no-show
+```
+
+## File formats
+
+Both formats are JSON. Routes use stable labels independent of solver internals:
+`"s"` = start/depot, `"f<i>"` = the `i`-th fruit (0-based), `"b<j>"` = the `j`-th basket (0-based).
+
+**Input (problem)** — e.g. `instances/test3_capacity_forced_multi_trip.json`:
+
+```json
+{
+  "name": "demo",
+  "start": [0.0, 0.0, 0.0],
+  "fruits": [[1, 0, 0], [2, 0, 0]],
+  "weights": [1.0, 1.0],
+  "baskets": [[3, 0, 0]],
+  "assignments": [0, 0],
+  "capacity": 10.0
+}
+```
+
+`weights` and `assignments` are parallel to `fruits`; each `assignments[i]` is a valid index into
+`baskets`. Coordinates may be 2D or 3D (2D is padded with `z = 0`).
+
+**Output (solution)** — written by **Save Output** / `--write-output`:
+
+```json
+{
+  "problem": "demo",
+  "route": ["s", "f0", "f1", "b0", "s"],
+  "cost": 6.0,
+  "status": "optimal",
+  "bounds": [6.0, 6.0]
+}
+```
+
+Load/save helpers live in `src/formats.py`; the feasibility checker is `src/validate.py`
+(`validate_route` verifies each fruit is visited once, delivered to its assigned basket, and that
+the carried load never exceeds `K`, plus an informational cost cross-check).
 
 ## Using the solver from your own code
 
