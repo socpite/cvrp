@@ -1,12 +1,33 @@
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
+
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
+
 from src.problem import Problem, Solution
 
 
+def _validate_problem(prob: Problem) -> None:
+    n, m = prob.n_fruits, prob.n_baskets
+    if len(prob.weights) != n:
+        raise ValueError(f"weights has {len(prob.weights)} entries but there are {n} fruits.")
+    if len(prob.assignments) != n:
+        raise ValueError(f"assignments has {len(prob.assignments)} entries but there are {n} fruits.")
+    if prob.capacity <= 0:
+        raise ValueError("capacity must be positive.")
+    for i, w in enumerate(prob.weights):
+        if w <= 0:
+            raise ValueError(f"weights[{i}] must be positive.")
+    for i, t in enumerate(prob.assignments):
+        if not 0 <= t < m:
+            raise ValueError(f"assignments[{i}] = {t} is not a valid basket index.")
+
+
 def _extract_route(y_vals: dict, n_nodes: int, s_idx: int) -> List[int]:
-    adj = {i: [v for v in range(n_nodes) if v != i and y_vals.get((i, v), 0) > 0.5] for i in range(n_nodes)}
+    adj = {
+        i: [v for v in range(n_nodes) if v != i and y_vals.get((i, v), 0) > 0.5]
+        for i in range(n_nodes)
+    }
     edge_used = {(i, j): False for i in adj for j in adj[i]}
     stack = [s_idx]
     circuit = []
@@ -48,7 +69,7 @@ def _label(route: List[int], n: int, m: int, s_idx: int, s_end: int) -> List[str
 
 
 def _cost_ext(i: int, j: int, cost_mat: np.ndarray,
-              s_idx: int, s_end: int, N_orig: int) -> float:
+              s_idx: int, s_end: int, n_orig: int) -> float:
     if i == s_idx:
         if j == s_end:
             return 0.0
@@ -56,7 +77,7 @@ def _cost_ext(i: int, j: int, cost_mat: np.ndarray,
     if i == s_end:
         if j == s_idx:
             return 0.0
-        return cost_mat[N_orig - 1, j - 1]
+        return cost_mat[n_orig - 1, j - 1]
     if j == s_idx:
         if i == s_end:
             return 0.0
@@ -64,27 +85,51 @@ def _cost_ext(i: int, j: int, cost_mat: np.ndarray,
     if j == s_end:
         if i == s_idx:
             return 0.0
-        return cost_mat[i - 1, N_orig - 1]
+        return cost_mat[i - 1, n_orig - 1]
     return cost_mat[i - 1, j - 1]
+
+
+def _compact_timed_route(route: List[int], s_end: int) -> List[int]:
+    compact = []
+    for node in route:
+        if compact and compact[-1] == node:
+            continue
+        compact.append(node)
+    while len(compact) > 1 and compact[-1] == s_end and compact[-2] == s_end:
+        compact.pop()
+    return compact
 
 
 def solve_ip(prob: Problem, time_limit: float = 120.0, verbose: bool = False,
              progress_cb: Optional[Callable[[float, float, str], None]] = None) -> Solution:
+    """Solve the picking-routing problem as an ordered, time-indexed MILP.
+
+    The paper's compact multi-commodity arc-flow model is a lower-bound
+    relaxation when baskets may be revisited. This implementation enforces the
+    route semantics directly: every fruit is picked once, delivery can occur
+    only at the assigned basket after pickup, and capacity is checked on the
+    carried set after each route position.
+    """
+    _validate_problem(prob)
+
     n, m = prob.n_fruits, prob.n_baskets
-    N = 2 + n + m
-    N_orig = 1 + n + m + 1
+    n_nodes = 2 + n + m
+    n_orig = 1 + n + m + 1
     s_idx = 0
     s_end = 1
     f_start, b_start = 2, 2 + n
 
-    edges = [(i, j) for i in range(N) for j in range(N) if i != j]
-    cost_mat = prob.cost_matrix()
-    cost_mat_ext = np.array([[_cost_ext(i, j, cost_mat, s_idx, s_end, N_orig)
-                              for j in range(N)] for i in range(N)])
+    horizon = max(1, 2 * n + 1)
+    slots = range(horizon + 1)
+    steps = range(horizon)
+    nodes = range(n_nodes)
+    arcs = [(i, j) for i in nodes for j in nodes]
 
-    total_assigned = [0.0] * m
-    for i, t in enumerate(prob.assignments):
-        total_assigned[t] += prob.weights[i]
+    cost_mat = prob.cost_matrix()
+    cost_mat_ext = np.array([
+        [_cost_ext(i, j, cost_mat, s_idx, s_end, n_orig) for j in nodes]
+        for i in nodes
+    ])
 
     model = gp.Model(f"cap_picking_{prob.name}")
     if not verbose:
@@ -92,63 +137,88 @@ def solve_ip(prob: Problem, time_limit: float = 120.0, verbose: bool = False,
     model.setParam("TimeLimit", time_limit)
     model.setParam("MIPGap", 1e-6)
 
-    y = model.addVars(edges, vtype=GRB.BINARY, name="y")
-    x = [model.addVars(edges, lb=0, name=f"x{b}") for b in range(m)]
+    visit = model.addVars(slots, nodes, vtype=GRB.BINARY, name="visit")
+    move = model.addVars(steps, arcs, vtype=GRB.BINARY, name="move")
+    delivered = model.addVars(range(n), slots, vtype=GRB.BINARY, name="delivered")
 
-    model.setObjective(gp.quicksum(cost_mat_ext[i, j] * y[i, j] for i, j in edges), GRB.MINIMIZE)
+    model.setObjective(
+        gp.quicksum(cost_mat_ext[i, j] * move[t, i, j] for t in steps for i, j in arcs),
+        GRB.MINIMIZE,
+    )
 
-    for f in range(f_start, f_start + n):
-        model.addConstr(gp.quicksum(y[f, j] for j in range(N) if j != f) == 1, name=f"out_{f}")
-        model.addConstr(gp.quicksum(y[i, f] for i in range(N) if i != f) == 1, name=f"in_{f}")
+    for t in slots:
+        model.addConstr(gp.quicksum(visit[t, i] for i in nodes) == 1, name=f"one_node_{t}")
 
-    for i in range(N):
+    model.addConstr(visit[0, s_idx] == 1, name="start_at_s")
+    model.addConstr(visit[horizon, s_end] == 1, name="end_at_s_prime")
+    for t in range(1, horizon + 1):
+        model.addConstr(visit[t, s_idx] == 0, name=f"no_return_to_s_{t}")
+    for t in steps:
+        model.addConstr(visit[t, s_end] <= visit[t + 1, s_end], name=f"s_prime_absorbs_{t}")
+
+    for f_idx in range(n):
+        fruit = f_start + f_idx
         model.addConstr(
-            gp.quicksum(y[i, j] for j in range(N) if j != i) ==
-            gp.quicksum(y[j, i] for j in range(N) if j != i),
-            name=f"bal_{i}",
+            gp.quicksum(visit[t, fruit] for t in slots) == 1,
+            name=f"fruit_once_{f_idx}",
         )
 
-    for b_idx in range(m):
-        for f_idx in range(n):
-            f = f_start + f_idx
-            t = prob.assignments[f_idx]
-            coeff = -prob.weights[f_idx] if t == b_idx else 0.0
-            lhs = gp.quicksum(x[b_idx][j, f] for j in range(N) if j != f) - gp.quicksum(x[b_idx][f, j] for j in range(N) if j != f)
-            model.addConstr(lhs == coeff, name=f"load{b_idx}_f{f}")
+    for t in steps:
+        for i in nodes:
+            model.addConstr(
+                gp.quicksum(move[t, i, j] for j in nodes) == visit[t, i],
+                name=f"move_out_{t}_{i}",
+            )
+        for j in nodes:
+            model.addConstr(
+                gp.quicksum(move[t, i, j] for i in nodes) == visit[t + 1, j],
+                name=f"move_in_{t}_{j}",
+            )
+        for i in nodes:
+            if i != s_end:
+                model.addConstr(move[t, i, i] == 0, name=f"no_self_loop_{t}_{i}")
 
-    for b_idx in range(m):
-        b = b_start + b_idx
-        for bb in range(m):
-            coeff = total_assigned[b_idx] if bb == b_idx else 0.0
-            lhs = gp.quicksum(x[bb][j, b] for j in range(N) if j != b) - gp.quicksum(x[bb][b, j] for j in range(N) if j != b)
-            model.addConstr(lhs == coeff, name=f"load{bb}_b{b}")
+    for f_idx in range(n):
+        fruit = f_start + f_idx
+        basket = b_start + prob.assignments[f_idx]
+        model.addConstr(delivered[f_idx, 0] == 0, name=f"not_delivered_initially_{f_idx}")
+        for t in range(1, horizon + 1):
+            picked_by_t = gp.quicksum(visit[tau, fruit] for tau in range(t + 1))
+            model.addConstr(
+                delivered[f_idx, t] >= delivered[f_idx, t - 1],
+                name=f"delivery_monotone_{f_idx}_{t}",
+            )
+            model.addConstr(
+                delivered[f_idx, t] <= picked_by_t,
+                name=f"deliver_after_pick_{f_idx}_{t}",
+            )
+            model.addConstr(
+                delivered[f_idx, t] - delivered[f_idx, t - 1] <= visit[t, basket],
+                name=f"deliver_only_at_basket_{f_idx}_{t}",
+            )
+        model.addConstr(delivered[f_idx, horizon] == 1, name=f"delivered_by_end_{f_idx}")
 
-    for b_idx in range(m):
-        for v in [s_idx, s_end]:
-            lhs = gp.quicksum(x[b_idx][j, v] for j in range(N) if j != v) - gp.quicksum(x[b_idx][v, j] for j in range(N) if j != v)
-            model.addConstr(lhs == 0, name=f"load{b_idx}_{v}")
-
-    for i, j in edges:
-        model.addConstr(gp.quicksum(x[b][i, j] for b in range(m)) <= prob.capacity * y[i, j], name=f"cap_{i}_{j}")
-
-    w = model.addVars(edges, ub=N, name="w")
-    model.addConstr(gp.quicksum(w[s_idx, j] for j in range(1, N)) == n, name="wsrc")
-    for f in range(f_start, f_start + n):
-        lhs = gp.quicksum(w[j, f] for j in range(N) if j != f) - gp.quicksum(w[f, j] for j in range(N) if j != f)
-        model.addConstr(lhs == 1, name=f"wf{f}")
-    for b in range(b_start, b_start + m):
-        lhs = gp.quicksum(w[j, b] for j in range(N) if j != b) - gp.quicksum(w[b, j] for j in range(N) if j != b)
-        model.addConstr(lhs == 0, name=f"wb{b}")
-    model.addConstr(gp.quicksum(w[j, s_end] for j in range(N) if j != s_end) - gp.quicksum(w[s_end, j] for j in range(N) if j != s_end) == -n, name="wsnk")
-    for i, j in edges:
-        model.addConstr(w[i, j] <= N * y[i, j], name=f"wl{i}_{j}")
+    for t in slots:
+        load = gp.quicksum(
+            prob.weights[f_idx] * (
+                gp.quicksum(visit[tau, f_start + f_idx] for tau in range(t + 1))
+                - delivered[f_idx, t]
+            )
+            for f_idx in range(n)
+        )
+        model.addConstr(load <= prob.capacity, name=f"capacity_{t}")
 
     if progress_cb is not None:
         def gurobi_cb(model, where):
             if where == GRB.Callback.MIP:
-                obj = model.cbGet(GRB.Callback.MIP_OBJ)
+                obj = model.cbGet(GRB.Callback.MIP_OBJBST)
                 bnd = model.cbGet(GRB.Callback.MIP_OBJBND)
-                gap = abs(obj - bnd) / (abs(obj) + 1e-10) * 100 if obj != 0 else float('inf')
+                if obj >= GRB.INFINITY or np.isinf(obj):
+                    gap = float("inf")
+                elif obj != 0:
+                    gap = abs(obj - bnd) / (abs(obj) + 1e-10) * 100
+                else:
+                    gap = float("inf")
                 progress_cb(obj, bnd, f"{gap:.1f}%")
             elif where == GRB.Callback.MESSAGE:
                 msg = model.cbGet(GRB.Callback.MSG_STRING)
@@ -158,18 +228,23 @@ def solve_ip(prob: Problem, time_limit: float = 120.0, verbose: bool = False,
     else:
         model.optimize()
 
-    status_str = {GRB.OPTIMAL: "optimal", GRB.TIME_LIMIT: "time_limit",
-                  GRB.INFEASIBLE: "infeasible", GRB.UNBOUNDED: "unbounded"}.get(
-        model.Status, f"status_{model.Status}")
+    status_str = {
+        GRB.OPTIMAL: "optimal",
+        GRB.TIME_LIMIT: "time_limit",
+        GRB.INFEASIBLE: "infeasible",
+        GRB.UNBOUNDED: "unbounded",
+    }.get(model.Status, f"status_{model.Status}")
 
     if model.SolCount > 0:
-        y_vals = {(i, j): y[i, j].X for i, j in edges}
-        route = _extract_route(y_vals, N, s_idx)
-        route = _trim_route(route, s_idx)
-        cost = sum(cost_mat_ext[route[k], route[k+1]] for k in range(len(route)-1))
+        route = []
+        for t in slots:
+            node = max(nodes, key=lambda i: visit[t, i].X)
+            route.append(node)
+        route = _compact_timed_route(route, s_end)
+        cost = sum(cost_mat_ext[route[k], route[k + 1]] for k in range(len(route) - 1))
         lb_obj = model.ObjBound
         if verbose:
-            print(f"  Route: {' → '.join(_label(route, n, m, s_idx, s_end))}")
+            print(f"  Route: {' -> '.join(_label(route, n, m, s_idx, s_end))}")
         return Solution(problem=prob, route=route, cost=cost, status=status_str,
                         bounds=(lb_obj, cost))
 

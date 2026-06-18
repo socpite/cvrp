@@ -1,0 +1,36 @@
+{
+  "name": "test6_capacity_one_at_a_time",
+  "start": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "fruits": [
+    [
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      2.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "weights": [
+    3.0,
+    3.0
+  ],
+  "baskets": [
+    [
+      3.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "assignments": [
+    0,
+    0
+  ],
+  "capacity": 3.0
+}

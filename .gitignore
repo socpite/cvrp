@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 *.png
 *.log
+
+# generated solver outputs (inputs live in instances/ and are tracked)
+output/
+solutions/
